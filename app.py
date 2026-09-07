@@ -2,9 +2,7 @@ import os
 from urllib.parse import urlparse, urlunparse
 
 import requests
-from flask import Flask, render_template, request
-
-app = Flask(__name__)
+import streamlit as st
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
 
@@ -34,41 +32,74 @@ GEOS = {
 
 def normalize_domain(value: str) -> str:
     value = (value or "").strip().lower()
+
     if not value:
         return ""
+
     if "://" not in value:
         value = "https://" + value
+
     host = urlparse(value).hostname or ""
+
     if host.startswith("www."):
         host = host[4:]
+
     return host.rstrip(".")
 
 
 def normalize_url(value: str) -> str:
     value = (value or "").strip()
+
     if not value:
         return ""
+
     if "://" not in value:
         value = "https://" + value
+
     parsed = urlparse(value)
+
     host = (parsed.hostname or "").lower()
+
     if host.startswith("www."):
         host = host[4:]
+
     path = parsed.path.rstrip("/") or "/"
-    return urlunparse(("https", host, path, "", "", ""))
+
+    return urlunparse(
+        (
+            "https",
+            host,
+            path,
+            "",
+            "",
+            "",
+        )
+    )
 
 
 def domain_matches(result_url: str, target_domain: str) -> bool:
     host = normalize_domain(result_url)
-    return host == target_domain or host.endswith("." + target_domain)
+
+    return (
+        host == target_domain
+        or host.endswith("." + target_domain)
+    )
 
 
 def url_matches(result_url: str, target_url: str) -> bool:
     return normalize_url(result_url) == normalize_url(target_url)
 
 
-def check_position(keyword: str, domain: str, target_url: str, geo: str, api_key: str):
+def check_position(
+    keyword: str,
+    domain: str,
+    target_url: str,
+    geo: str,
+    api_key: str,
+):
+
     gl, hl = GEOS[geo]
+
     params = {
         "engine": "google",
         "q": keyword,
@@ -81,35 +112,65 @@ def check_position(keyword: str, domain: str, target_url: str, geo: str, api_key
         "safe": "off",
     }
 
-    response = requests.get(SERPAPI_ENDPOINT, params=params, timeout=45)
+    response = requests.get(
+        SERPAPI_ENDPOINT,
+        params=params,
+        timeout=45,
+    )
+
     response.raise_for_status()
+
     data = response.json()
+
     if data.get("error"):
         raise RuntimeError(data["error"])
 
     organic = data.get("organic_results", [])
+
     target_domain = normalize_domain(domain)
-    strict_target = normalize_url(target_url) if target_url else ""
+
+    strict_target = (
+        normalize_url(target_url)
+        if target_url
+        else ""
+    )
 
     domain_hit = None
     exact_url_hit = None
 
     for item in organic:
+
         result_url = item.get("link", "")
+
         if not result_url:
             continue
+
         hit = {
             "position": item.get("position"),
             "url": result_url,
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
         }
-        if strict_target and url_matches(result_url, strict_target) and exact_url_hit is None:
+
+        if (
+            strict_target
+            and url_matches(result_url, strict_target)
+            and exact_url_hit is None
+        ):
             exact_url_hit = hit
-        if domain_matches(result_url, target_domain) and domain_hit is None:
+
+        if (
+            domain_matches(result_url, target_domain)
+            and domain_hit is None
+        ):
             domain_hit = hit
 
-    selected = exact_url_hit if strict_target else domain_hit
+    selected = (
+        exact_url_hit
+        if strict_target
+        else domain_hit
+    )
+
     return {
         "found": selected is not None,
         "hit": selected,
@@ -120,40 +181,214 @@ def check_position(keyword: str, domain: str, target_url: str, geo: str, api_key
     }
 
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    result = None
-    error = None
-    form = {"keyword": "", "domain": "", "target_url": "", "geo": "Ghana"}
+st.set_page_config(
+    page_title="Mobile SERP Position Checker",
+    page_icon="📱",
+    layout="centered",
+)
 
-    if request.method == "POST":
-        form = {
-            "keyword": request.form.get("keyword", "").strip(),
-            "domain": request.form.get("domain", "").strip(),
-            "target_url": request.form.get("target_url", "").strip(),
-            "geo": request.form.get("geo", "Ghana"),
-        }
-        api_key = os.getenv("SERPAPI_KEY", "").strip()
 
-        if not form["keyword"]:
-            error = "Введите поисковый запрос."
-        elif not normalize_domain(form["domain"]):
-            error = "Введите корректный домен."
-        elif form["geo"] not in GEOS:
-            error = "Выберите корректное GEO."
-        elif not api_key:
-            error = "Не задан SERPAPI_KEY. Добавьте API-ключ в переменные окружения."
-        else:
+st.markdown(
+    """
+    <style>
+
+    .block-container {
+        max-width: 900px;
+        padding-top: 40px;
+        padding-bottom: 60px;
+    }
+
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        margin-bottom: 5px;
+    }
+
+    .subtitle {
+        font-size: 16px;
+        color: #888;
+        margin-bottom: 30px;
+    }
+
+    .result-box {
+        padding: 25px;
+        border-radius: 16px;
+        border: 1px solid #2d2d2d;
+        margin-top: 20px;
+    }
+
+    .position {
+        font-size: 48px;
+        font-weight: 800;
+        margin: 10px 0;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+st.markdown(
+    '<div class="main-title">📱 Mobile SERP Checker</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="subtitle">
+    Проверка позиции домена в мобильной выдаче Google по выбранному GEO.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+keyword = st.text_input(
+    "Поисковый запрос",
+    placeholder="например: chicken road casino",
+)
+
+
+domain = st.text_input(
+    "Домен",
+    placeholder="например: chickenroad-app-bonus.net",
+)
+
+
+target_url = st.text_input(
+    "Конкретный URL — необязательно",
+    placeholder="https://example.com/page/",
+)
+
+
+geo = st.selectbox(
+    "GEO",
+    list(GEOS.keys()),
+)
+
+
+st.info(
+    "Устройство: Mobile • Глубина проверки: до TOP 100"
+)
+
+
+if st.button(
+    "Проверить позицию",
+    use_container_width=True,
+):
+
+    api_key = ""
+
+    try:
+        api_key = st.secrets["SERPAPI_KEY"]
+    except Exception:
+        api_key = os.getenv(
+            "SERPAPI_KEY",
+            "",
+        )
+
+    if not keyword:
+        st.error("Введите поисковый запрос.")
+
+    elif not normalize_domain(domain):
+        st.error("Введите корректный домен.")
+
+    elif not api_key:
+        st.error(
+            "Не найден SERPAPI_KEY. Добавьте ключ в Streamlit Secrets."
+        )
+
+    else:
+
+        with st.spinner(
+            "Проверяю мобильную выдачу Google..."
+        ):
+
             try:
-                result = check_position(form["keyword"], form["domain"], form["target_url"], form["geo"], api_key)
-            except requests.RequestException as exc:
-                error = f"Ошибка запроса к SERP API: {exc}"
+
+                result = check_position(
+                    keyword,
+                    domain,
+                    target_url,
+                    geo,
+                    api_key,
+                )
+
+                if result["found"]:
+
+                    hit = result["hit"]
+
+                    st.success(
+                        "Домен найден в выдаче"
+                    )
+
+                    st.markdown(
+                        f"""
+                        <div class="result-box">
+
+                        <div>Позиция</div>
+
+                        <div class="position">
+                        #{hit["position"]}
+                        </div>
+
+                        <b>Ranking URL</b><br>
+                        {hit["url"]}
+
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    if hit.get("title"):
+                        st.write(
+                            "**Title:**",
+                            hit["title"],
+                        )
+
+                    if hit.get("snippet"):
+                        st.write(
+                            "**Snippet:**",
+                            hit["snippet"],
+                        )
+
+                else:
+
+                    st.error(
+                        "Не найдено в TOP 100"
+                    )
+
+                    if (
+                        result["exact_url_requested"]
+                        and result["domain_hit"]
+                    ):
+
+                        domain_hit = result[
+                            "domain_hit"
+                        ]
+
+                        st.warning(
+                            "Указанный URL не найден, но другой URL этого домена ранжируется."
+                        )
+
+                        st.write(
+                            "Позиция домена:",
+                            f'#{domain_hit["position"]}',
+                        )
+
+                        st.write(
+                            "URL:",
+                            domain_hit["url"],
+                        )
+
             except Exception as exc:
-                error = str(exc)
 
-    return render_template("index.html", geos=list(GEOS.keys()), form=form, result=result, error=error)
+                st.error(
+                    f"Ошибка: {exc}"
+                )
 
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+st.caption(
+    "Google Mobile • SERP API • TOP 100"
+)
