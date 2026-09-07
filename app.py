@@ -1,10 +1,12 @@
 import os
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, parse_qs, unquote_plus
 
 import requests
 import streamlit as st
 
+
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
+
 
 GEOS = {
     "Ghana": ("gh", "en"),
@@ -30,7 +32,12 @@ GEOS = {
 }
 
 
+# -----------------------------
+# DOMAIN
+# -----------------------------
+
 def normalize_domain(value: str) -> str:
+
     value = (value or "").strip().lower()
 
     if not value:
@@ -47,55 +54,57 @@ def normalize_domain(value: str) -> str:
     return host.rstrip(".")
 
 
-def normalize_url(value: str) -> str:
-    value = (value or "").strip()
-
-    if not value:
-        return ""
-
-    if "://" not in value:
-        value = "https://" + value
-
-    parsed = urlparse(value)
-
-    host = (parsed.hostname or "").lower()
-
-    if host.startswith("www."):
-        host = host[4:]
-
-    path = parsed.path.rstrip("/") or "/"
-
-    return urlunparse(
-        (
-            "https",
-            host,
-            path,
-            "",
-            "",
-            "",
-        )
-    )
-
-
 def domain_matches(result_url: str, target_domain: str) -> bool:
-    host = normalize_domain(result_url)
+
+    result_domain = normalize_domain(result_url)
 
     return (
-        host == target_domain
-        or host.endswith("." + target_domain)
+        result_domain == target_domain
+        or result_domain.endswith("." + target_domain)
     )
 
 
-def url_matches(result_url: str, target_url: str) -> bool:
-    return normalize_url(result_url) == normalize_url(target_url)
+# -----------------------------
+# SEARCH URL
+# -----------------------------
 
+def extract_keyword(search_url: str) -> str:
+
+    search_url = (search_url or "").strip()
+
+    if not search_url:
+        return ""
+
+    # Если человек вставил URL без https://
+    if "://" not in search_url:
+        search_url = "https://" + search_url
+
+    parsed = urlparse(search_url)
+
+    params = parse_qs(parsed.query)
+
+    # Основной параметр Google
+    keyword = params.get("q", [""])[0]
+
+    # На случай других вариантов URL
+    if not keyword:
+        keyword = params.get("query", [""])[0]
+
+    if not keyword:
+        keyword = params.get("keyword", [""])[0]
+
+    return unquote_plus(keyword).strip()
+
+
+# -----------------------------
+# SERP CHECK
+# -----------------------------
 
 def check_position(
     keyword: str,
     domain: str,
-    target_url: str,
     geo: str,
-    api_key: str,
+    api_key: str
 ):
 
     gl, hl = GEOS[geo]
@@ -104,10 +113,18 @@ def check_position(
         "engine": "google",
         "q": keyword,
         "api_key": api_key,
+
+        # GEO
         "gl": gl,
         "hl": hl,
+
+        # Главное — мобильная выдача
         "device": "mobile",
-        "num": 100,
+
+        # Берём результаты с запасом,
+        # но сами анализируем только TOP 30
+        "num": 30,
+
         "filter": "0",
         "safe": "off",
     }
@@ -115,7 +132,7 @@ def check_position(
     response = requests.get(
         SERPAPI_ENDPOINT,
         params=params,
-        timeout=45,
+        timeout=45
     )
 
     response.raise_for_status()
@@ -125,262 +142,429 @@ def check_position(
     if data.get("error"):
         raise RuntimeError(data["error"])
 
-    organic = data.get("organic_results", [])
+    organic_results = data.get(
+        "organic_results",
+        []
+    )
 
     target_domain = normalize_domain(domain)
 
-    strict_target = (
-        normalize_url(target_url)
-        if target_url
-        else ""
-    )
+    found_result = None
 
-    domain_hit = None
-    exact_url_hit = None
+    checked_results = []
 
-    for item in organic:
+    for item in organic_results:
+
+        position = item.get("position")
+
+        # Нас интересует исключительно TOP 30
+        if not position:
+            continue
+
+        if position > 30:
+            continue
 
         result_url = item.get("link", "")
 
         if not result_url:
             continue
 
-        hit = {
-            "position": item.get("position"),
+        result_data = {
+            "position": position,
             "url": result_url,
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
         }
 
-        if (
-            strict_target
-            and url_matches(result_url, strict_target)
-            and exact_url_hit is None
-        ):
-            exact_url_hit = hit
+        checked_results.append(result_data)
 
-        if (
-            domain_matches(result_url, target_domain)
-            and domain_hit is None
+        if domain_matches(
+            result_url,
+            target_domain
         ):
-            domain_hit = hit
 
-    selected = (
-        exact_url_hit
-        if strict_target
-        else domain_hit
-    )
+            if found_result is None:
+                found_result = result_data
 
     return {
-        "found": selected is not None,
-        "hit": selected,
-        "domain_hit": domain_hit,
-        "exact_url_requested": bool(strict_target),
-        "checked_results": len(organic),
+        "found": found_result is not None,
+        "hit": found_result,
+        "checked_results": checked_results,
         "geo": geo,
+        "keyword": keyword,
     }
 
 
+# -----------------------------
+# STREAMLIT
+# -----------------------------
+
 st.set_page_config(
-    page_title="Mobile SERP Position Checker",
+    page_title="Mobile SERP Checker",
     page_icon="📱",
-    layout="centered",
+    layout="centered"
 )
 
+
+# -----------------------------
+# DESIGN
+# -----------------------------
 
 st.markdown(
     """
     <style>
 
     .block-container {
-        max-width: 900px;
-        padding-top: 40px;
+        max-width: 950px;
+        padding-top: 45px;
         padding-bottom: 60px;
     }
 
     .main-title {
-        font-size: 42px;
+        font-size: 48px;
         font-weight: 800;
-        margin-bottom: 5px;
+        line-height: 1.1;
+        margin-bottom: 12px;
     }
 
     .subtitle {
-        font-size: 16px;
+        font-size: 17px;
         color: #888;
-        margin-bottom: 30px;
+        margin-bottom: 35px;
     }
 
-    .result-box {
-        padding: 25px;
-        border-radius: 16px;
-        border: 1px solid #2d2d2d;
-        margin-top: 20px;
+    .search-info {
+        background: #eef5ff;
+        border: 1px solid #d7e6ff;
+        padding: 18px 20px;
+        border-radius: 14px;
+        margin-top: 15px;
+        margin-bottom: 20px;
     }
 
-    .position {
-        font-size: 48px;
-        font-weight: 800;
-        margin: 10px 0;
+    .result-success {
+        background: #eefbf3;
+        border: 1px solid #b9eccd;
+        border-radius: 18px;
+        padding: 28px;
+        margin-top: 25px;
+    }
+
+    .result-error {
+        background: #fff3f3;
+        border: 1px solid #ffcaca;
+        border-radius: 18px;
+        padding: 28px;
+        margin-top: 25px;
+    }
+
+    .position-number {
+        font-size: 60px;
+        font-weight: 900;
+        line-height: 1;
+        margin-top: 10px;
+        margin-bottom: 15px;
+    }
+
+    .found-label {
+        font-size: 15px;
+        font-weight: 700;
+    }
+
+    div[data-testid="stTextInput"] input {
+        min-height: 58px;
+        border-radius: 13px;
+    }
+
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        min-height: 58px;
+        border-radius: 13px;
+    }
+
+    div.stButton > button {
+        min-height: 58px;
+        border-radius: 13px;
+        font-size: 17px;
+        font-weight: 700;
     }
 
     </style>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
 
+# -----------------------------
+# HEADER
+# -----------------------------
+
 st.markdown(
-    '<div class="main-title">📱 Mobile SERP Checker</div>',
-    unsafe_allow_html=True,
+    """
+    <div class="main-title">
+        📱 Mobile SERP Checker
+    </div>
+    """,
+    unsafe_allow_html=True
 )
 
 st.markdown(
     """
     <div class="subtitle">
-    Проверка позиции домена в мобильной выдаче Google по выбранному GEO.
+        Проверка позиции домена в мобильной выдаче Google
+        по URL поискового запроса и выбранному GEO.
     </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
 
-keyword = st.text_input(
-    "Поисковый запрос",
-    placeholder="например: chicken road casino",
+# -----------------------------
+# FORM
+# -----------------------------
+
+search_url = st.text_input(
+    "URL поиска *",
+    placeholder="https://www.google.com/search?q=chicken+road+casino"
 )
 
 
 domain = st.text_input(
-    "Домен",
-    placeholder="например: chickenroad-app-bonus.net",
-)
-
-
-target_url = st.text_input(
-    "Конкретный URL — необязательно",
-    placeholder="https://example.com/page/",
+    "Домен *",
+    placeholder="chickenroad-app-bonus.net"
 )
 
 
 geo = st.selectbox(
     "GEO",
-    list(GEOS.keys()),
+    list(GEOS.keys())
 )
 
 
-st.info(
-    "Устройство: Mobile • Глубина проверки: до TOP 100"
-)
+keyword = extract_keyword(search_url)
 
+
+if search_url and keyword:
+
+    st.markdown(
+        f"""
+        <div class="search-info">
+            <b>Запрос из URL:</b><br>
+            {keyword}
+            <br><br>
+            📱 Mobile &nbsp;•&nbsp;
+            🌍 {geo} &nbsp;•&nbsp;
+            🔎 TOP 30
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+elif search_url:
+
+    st.warning(
+        "В URL не найден поисковый запрос. "
+        "Ожидается ссылка с параметром ?q=..."
+    )
+
+
+# -----------------------------
+# BUTTON
+# -----------------------------
 
 if st.button(
     "Проверить позицию",
-    use_container_width=True,
+    use_container_width=True
 ):
-
-    api_key = ""
 
     try:
         api_key = st.secrets["SERPAPI_KEY"]
+
     except Exception:
+
         api_key = os.getenv(
             "SERPAPI_KEY",
-            "",
+            ""
         )
 
-    if not keyword:
-        st.error("Введите поисковый запрос.")
+
+    if not search_url:
+
+        st.error(
+            "Введите URL поискового запроса."
+        )
+
+
+    elif not keyword:
+
+        st.error(
+            "Не удалось определить запрос из URL. "
+            "Пример: https://google.com/search?q=chicken+road"
+        )
+
 
     elif not normalize_domain(domain):
-        st.error("Введите корректный домен.")
+
+        st.error(
+            "Введите домен."
+        )
+
 
     elif not api_key:
+
         st.error(
-            "Не найден SERPAPI_KEY. Добавьте ключ в Streamlit Secrets."
+            "Не найден SERPAPI_KEY."
         )
+
 
     else:
 
         with st.spinner(
-            "Проверяю мобильную выдачу Google..."
+            f'Проверяю "{keyword}" — Mobile / {geo}...'
         ):
 
             try:
 
                 result = check_position(
-                    keyword,
-                    domain,
-                    target_url,
-                    geo,
-                    api_key,
+                    keyword=keyword,
+                    domain=domain,
+                    geo=geo,
+                    api_key=api_key
                 )
+
+
+                # -----------------------------
+                # FOUND
+                # -----------------------------
 
                 if result["found"]:
 
                     hit = result["hit"]
 
-                    st.success(
-                        "Домен найден в выдаче"
-                    )
+                    position = hit["position"]
 
                     st.markdown(
                         f"""
-                        <div class="result-box">
+                        <div class="result-success">
 
-                        <div>Позиция</div>
+                            <div class="found-label">
+                                ✅ ДОМЕН НАЙДЕН
+                            </div>
 
-                        <div class="position">
-                        #{hit["position"]}
-                        </div>
+                            <div class="position-number">
+                                #{position}
+                            </div>
 
-                        <b>Ranking URL</b><br>
-                        {hit["url"]}
+                            <div>
+                                <b>Запрос:</b>
+                                {keyword}
+                            </div>
+
+                            <br>
+
+                            <div>
+                                <b>GEO:</b>
+                                {geo}
+                            </div>
+
+                            <br>
+
+                            <div>
+                                <b>Device:</b>
+                                Mobile
+                            </div>
+
+                            <br>
+
+                            <div>
+                                <b>Ranking URL:</b><br>
+                                {hit["url"]}
+                            </div>
 
                         </div>
                         """,
-                        unsafe_allow_html=True,
+                        unsafe_allow_html=True
                     )
 
+
                     if hit.get("title"):
+
                         st.write(
                             "**Title:**",
-                            hit["title"],
+                            hit["title"]
                         )
 
+
                     if hit.get("snippet"):
+
                         st.write(
                             "**Snippet:**",
-                            hit["snippet"],
+                            hit["snippet"]
                         )
+
+
+                # -----------------------------
+                # NOT FOUND
+                # -----------------------------
 
                 else:
 
-                    st.error(
-                        "Не найдено в TOP 100"
+                    st.markdown(
+                        f"""
+                        <div class="result-error">
+
+                            <div class="found-label">
+                                ❌ ДОМЕН НЕ НАЙДЕН
+                            </div>
+
+                            <br>
+
+                            <div style="
+                                font-size:30px;
+                                font-weight:800;
+                            ">
+                                Нет в TOP 30
+                            </div>
+
+                            <br>
+
+                            <b>Домен:</b>
+                            {domain}
+
+                            <br><br>
+
+                            <b>Запрос:</b>
+                            {keyword}
+
+                            <br><br>
+
+                            <b>GEO:</b>
+                            {geo}
+
+                            <br><br>
+
+                            <b>Device:</b>
+                            Mobile
+
+                        </div>
+                        """,
+                        unsafe_allow_html=True
                     )
 
-                    if (
-                        result["exact_url_requested"]
-                        and result["domain_hit"]
-                    ):
 
-                        domain_hit = result[
-                            "domain_hit"
-                        ]
+            except requests.Timeout:
 
-                        st.warning(
-                            "Указанный URL не найден, но другой URL этого домена ранжируется."
-                        )
+                st.error(
+                    "Сервис проверки не ответил вовремя."
+                )
 
-                        st.write(
-                            "Позиция домена:",
-                            f'#{domain_hit["position"]}',
-                        )
 
-                        st.write(
-                            "URL:",
-                            domain_hit["url"],
-                        )
+            except requests.RequestException as exc:
+
+                st.error(
+                    f"Ошибка SERP API: {exc}"
+                )
+
 
             except Exception as exc:
 
@@ -390,5 +574,5 @@ if st.button(
 
 
 st.caption(
-    "Google Mobile • SERP API • TOP 100"
+    "Google Mobile • TOP 30"
 )
