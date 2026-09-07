@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mobile SERP Position Checker</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b1020;color:#eef2ff;min-height:100vh}
+    .wrap{max-width:1040px;margin:0 auto;padding:48px 20px}.hero{margin-bottom:28px}.badge{display:inline-flex;padding:7px 11px;border:1px solid #2a3555;border-radius:999px;background:#121a31;color:#aebcff;font-size:13px}
+    h1{font-size:clamp(30px,5vw,48px);margin:14px 0 10px}.sub{color:#9eabc7;max-width:760px;line-height:1.6}.grid{display:grid;grid-template-columns:1.2fr .8fr;gap:22px}@media(max-width:820px){.grid{grid-template-columns:1fr}}
+    .card{background:#11182b;border:1px solid #24304d;border-radius:22px;padding:22px;box-shadow:0 18px 50px rgba(0,0,0,.25)} label{display:block;font-size:13px;color:#aeb7cc;margin:16px 0 8px}
+    input,select{width:100%;border:1px solid #2d3959;background:#0c1325;color:#f7f9ff;border-radius:12px;padding:13px 14px;font-size:15px;outline:none}input:focus,select:focus{border-color:#6c7cff;box-shadow:0 0 0 3px rgba(108,124,255,.15)}
+    button{margin-top:20px;width:100%;border:0;border-radius:13px;padding:14px 16px;font-weight:700;font-size:15px;background:#6c7cff;color:white;cursor:pointer}button:hover{filter:brightness(1.06)}
+    .error{padding:13px 14px;border-radius:12px;background:#35181e;border:1px solid #6d2b36;color:#ffb7c1;margin-bottom:16px}.result{min-height:320px;display:flex;flex-direction:column;justify-content:center}.muted{color:#8794b1}.status{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#aab6d3}.position{font-size:70px;line-height:1;font-weight:800;margin:10px 0}.found{color:#6fe8a7}.notfound{color:#ff8c9c}.url{word-break:break-all;color:#c8d1ff;font-size:14px;background:#0b1222;border-radius:11px;padding:11px 12px;margin-top:10px}.meta{margin-top:16px;color:#8e9bb8;font-size:14px;line-height:1.6}.tiny{font-size:12px;color:#73809c;margin-top:14px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <span class="badge">Google Mobile Rank Tracker</span>
+    <h1>Проверка позиции домена в мобильной выдаче</h1>
+    <div class="sub">Введи запрос, домен и GEO. Если нужно — укажи конкретный URL. Проверка идёт по мобильной выдаче Google через SERP API.</div>
+  </div>
+
+  <div class="grid">
+    <form class="card" method="post">
+      {% if error %}<div class="error">{{ error }}</div>{% endif %}
+      <label>Поисковый запрос</label>
+      <input name="keyword" value="{{ form.keyword }}" placeholder="например: chicken road casino" required>
+
+      <label>Домен</label>
+      <input name="domain" value="{{ form.domain }}" placeholder="example.com" required>
+
+      <label>URL страницы — необязательно</label>
+      <input name="target_url" value="{{ form.target_url }}" placeholder="https://example.com/chicken-road/">
+
+      <label>GEO</label>
+      <select name="geo">
+        {% for geo in geos %}<option value="{{ geo }}" {% if geo == form.geo %}selected{% endif %}>{{ geo }}</option>{% endfor %}
+      </select>
+
+      <button type="submit">Проверить позицию</button>
+      <div class="tiny">Если URL не указан — ищется первая позиция любого URL с этого домена. Если URL указан — сначала проверяется именно он.</div>
+    </form>
+
+    <div class="card result">
+      {% if result %}
+        {% if result.found %}
+          <div class="status found">FOUND</div>
+          <div class="position">#{{ result.hit.position }}</div>
+          <div class="muted">Найдена позиция в Google Mobile · {{ result.geo }}</div>
+          <div class="url">{{ result.hit.url }}</div>
+          {% if result.hit.title %}<div class="meta"><strong>{{ result.hit.title }}</strong></div>{% endif %}
+        {% else %}
+          <div class="status notfound">NOT FOUND</div>
+          <div class="position">—</div>
+          <div class="muted">Цель не найдена среди полученных органических результатов.</div>
+          {% if result.exact_url_requested and result.domain_hit %}
+            <div class="meta">Но сам домен найден на позиции <strong>#{{ result.domain_hit.position }}</strong>:</div>
+            <div class="url">{{ result.domain_hit.url }}</div>
+          {% endif %}
+        {% endif %}
+        <div class="meta">Проверено результатов: {{ result.checked_results }}<br>Устройство: Mobile</div>
+      {% else %}
+        <div class="status">RESULT</div>
+        <div class="position muted">#?</div>
+        <div class="muted">Здесь появится позиция и URL, который реально найден в выдаче.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+</body>
+</html>
